@@ -3,6 +3,7 @@ import { useForceSimulation } from '../hooks/useForceSimulation.js'
 import { EdgeLayer } from './EdgeLayer.jsx'
 import { NodeLayer } from './NodeLayer.jsx'
 import { SolarSystemBoundary } from './SolarSystemBoundary.jsx'
+import { getDecayState } from '../planetDecay.js'
 
 const MIN_ZOOM = 0.05
 const MAX_ZOOM = 4
@@ -14,6 +15,7 @@ const RESET_DURATION = 400
 const TOOLTIP_OFFSET = 16
 const TOOLTIP_WIDTH = 220
 const TOOLTIP_HEIGHT = 58
+const DECAY_REFRESH_MS = 60 * 1000
 
 function randomStars(count, width, height) {
   return Array.from({ length: count }, (_, index) => {
@@ -89,6 +91,16 @@ function formatLastVisited(lastVisited) {
   return `${elapsedDays} day${elapsedDays === 1 ? '' : 's'} ago`
 }
 
+function decayTooltipForNode(node, now) {
+  if (node.type !== 'sub') return null
+
+  const state = getDecayState(node.lastVisited, now)
+  if (state === 'fading') return { label: 'Fading', className: 'node-tooltip-decay--fading' }
+  if (state === 'critical') return { label: 'Critical', className: 'node-tooltip-decay--critical' }
+  if (state === 'dead') return { label: 'Needs attention', className: 'node-tooltip-decay--dead' }
+  return null
+}
+
 function tooltipPositionForNode(node, transform, viewport) {
   const screenX = node.x * transform.k + transform.x
   const screenY = node.y * transform.k + transform.y
@@ -129,6 +141,7 @@ export function Universe({
   const [deleteEdgeId, setDeleteEdgeId] = useState(null)
   const [contextMenu, setContextMenu] = useState(null)
   const [hoveredNodeId, setHoveredNodeId] = useState(null)
+  const [decayNow, setDecayNow] = useState(() => Date.now())
   const stars = useMemo(() => randomStars(520, window.innerWidth, window.innerHeight), [])
   const resetShortcutLabel = useMemo(() => (navigator.platform.includes('Mac') ? '⌘0' : 'Ctrl+0'), [])
   const simulation = useForceSimulation({ nodes, edges, rearrangeRequest, onNodePositionChange })
@@ -157,7 +170,19 @@ export function Universe({
     return () => window.removeEventListener('resize', resize)
   }, [])
 
+  useEffect(() => {
+    const interval = window.setInterval(() => setDecayNow(Date.now()), DECAY_REFRESH_MS)
+    return () => window.clearInterval(interval)
+  }, [])
+
   const visibleNodes = simulation.nodes
+  const renderedNodes = useMemo(() => {
+    const latestById = new Map(nodes.map((node) => [node.id, node]))
+    return visibleNodes.map((node) => {
+      const latest = latestById.get(node.id)
+      return latest ? { ...latest, x: node.x, y: node.y, solarSystemId: node.solarSystemId ?? latest.solarSystemId ?? null } : node
+    })
+  }, [nodes, visibleNodes])
 
   const connectLinkedIds = useMemo(() => {
     if (!connectSourceId) return null
@@ -398,6 +423,7 @@ export function Universe({
     ? { ...hoveredLatestNode, x: hoveredSimulationNode.x, y: hoveredSimulationNode.y }
     : hoveredSimulationNode
   const tooltipPosition = hoveredNode ? tooltipPositionForNode(hoveredNode, transform, size) : null
+  const tooltipDecay = hoveredNode ? decayTooltipForNode(hoveredNode, decayNow) : null
 
   return (
     <>
@@ -421,6 +447,18 @@ export function Universe({
         </filter>
         <filter id="sub-glow" x="-120%" y="-120%" width="340%" height="340%">
           <feGaussianBlur stdDeviation="3.5" result="blur" />
+          <feComposite in="SourceGraphic" in2="blur" operator="over" />
+        </filter>
+        <filter id="sub-glow-fading" x="-120%" y="-120%" width="340%" height="340%">
+          <feGaussianBlur stdDeviation="2.1" result="blur" />
+          <feComposite in="SourceGraphic" in2="blur" operator="over" />
+        </filter>
+        <filter id="sub-glow-critical" x="-120%" y="-120%" width="340%" height="340%">
+          <feGaussianBlur stdDeviation="1.05" result="blur" />
+          <feComposite in="SourceGraphic" in2="blur" operator="over" />
+        </filter>
+        <filter id="sub-glow-dead" x="-120%" y="-120%" width="340%" height="340%">
+          <feGaussianBlur stdDeviation="0.5" result="blur" />
           <feComposite in="SourceGraphic" in2="blur" operator="over" />
         </filter>
         <filter id="edge-glow" x="-60%" y="-60%" width="220%" height="220%">
@@ -450,12 +488,13 @@ export function Universe({
           <EdgeLayer
             edges={edges}
             highlightIds={highlightIds}
-            nodes={visibleNodes}
+            nodes={renderedNodes}
             onSelectEdge={setDeleteEdgeId}
           />
           <NodeLayer
             connectLinkedIds={connectLinkedIds}
             connectSourceId={connectSourceId}
+            decayNow={decayNow}
             highlightIds={highlightIds}
             nodes={visibleNodes}
             selectedNodeId={selectedNodeId}
@@ -487,6 +526,7 @@ export function Universe({
         <div className="node-tooltip" style={{ left: tooltipPosition.left, top: tooltipPosition.top }}>
           <strong>{hoveredNode.name}</strong>
           <span>{formatLastVisited(hoveredNode.lastVisited)}</span>
+          {tooltipDecay ? <span className={`node-tooltip-decay ${tooltipDecay.className}`}>{tooltipDecay.label}</span> : null}
         </div>
       ) : null}
       <button className="reset-view-button" type="button" title={`Reset view (${resetShortcutLabel})`} aria-label={`Reset view (${resetShortcutLabel})`} onClick={resetView}>

@@ -99,6 +99,20 @@
   stroke-width: 2.6;
 }
 
+.planet-node--sub.is-dead {
+  animation: dead-planet-pulse 3s ease-in-out infinite;
+}
+
+@keyframes dead-planet-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
 .planet-hit-area {
   fill: transparent;
   cursor: grab;
@@ -149,6 +163,25 @@
   margin-top: 0.2rem;
   color: rgba(219, 244, 255, 0.48);
   font-size: 0.78rem;
+}
+
+.node-tooltip .node-tooltip-decay {
+  margin-top: 0.35rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.node-tooltip .node-tooltip-decay--fading {
+  color: rgba(219, 244, 255, 0.42);
+}
+
+.node-tooltip .node-tooltip-decay--critical {
+  color: rgba(255, 190, 92, 0.82);
+}
+
+.node-tooltip .node-tooltip-decay--dead {
+  color: rgba(255, 112, 112, 0.78);
 }
 
 .edge-delete {

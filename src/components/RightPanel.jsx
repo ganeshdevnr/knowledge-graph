@@ -174,7 +174,7 @@ function NotesModal({ node, onClose, onUpdateNode }) {
   }, [])
 
   function saveNotes() {
-    onUpdateNode(node.id, { notes: draft })
+    onUpdateNode(node.id, { notes: draft, lastVisited: new Date().toISOString() })
     setSaved(true)
     window.clearTimeout(saveResetRef.current)
     saveResetRef.current = window.setTimeout(() => setSaved(false), 1500)
