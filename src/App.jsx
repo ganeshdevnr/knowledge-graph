@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import './App.css'
 import { RightPanel } from './components/RightPanel.jsx'
-import { UniverseMenu } from './components/UniverseMenu.jsx'
 import { Universe } from './components/Universe.jsx'
 import { loadUniverse, saveUniverse } from './storage.js'
 
@@ -14,6 +13,7 @@ function createMainPlanet(name = 'Origin System', x = window.innerWidth / 2, y =
     id: createId('main'),
     type: 'main',
     name,
+    notes: '',
     tags: ['system'],
     createdAt: new Date().toISOString(),
     x,
@@ -31,9 +31,9 @@ function initialUniverse() {
 
 function normalizeMembership(nodes) {
   return nodes.map((node) => {
-    if (node.type === 'main') return node
+    if (node.type === 'main') return { ...node, notes: node.notes ?? '' }
     const { systemId: legacySystemId, ...rest } = node
-    return { ...rest, solarSystemId: node.solarSystemId ?? legacySystemId ?? null }
+    return { ...rest, notes: node.notes ?? '', lastVisited: node.lastVisited ?? node.createdAt, solarSystemId: node.solarSystemId ?? legacySystemId ?? null }
   })
 }
 
@@ -60,7 +60,7 @@ function App() {
   const [edges, setEdges] = useState(() => loadUniverse()?.edges ?? [])
   const [selectedNodeId, setSelectedNodeId] = useState(null)
   const [activeMainId, setActiveMainId] = useState(null)
-  const [isMenuOpen, setIsMenuOpen] = useState(false)
+  const [connectSourceId, setConnectSourceId] = useState(null)
   const [viewportCenter, setViewportCenter] = useState(() => ({ x: window.innerWidth / 2, y: window.innerHeight / 2 }))
   const [rearrangeRequest, setRearrangeRequest] = useState(null)
 
@@ -68,7 +68,17 @@ function App() {
     saveUniverse({ nodes, edges })
   }, [nodes, edges])
 
+  useEffect(() => {
+    if (!connectSourceId) return
+    function handleEscape(event) {
+      if (event.key === 'Escape') setConnectSourceId(null)
+    }
+    window.addEventListener('keydown', handleEscape)
+    return () => window.removeEventListener('keydown', handleEscape)
+  }, [connectSourceId])
+
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null
+  const connectSource = nodes.find((node) => node.id === connectSourceId) ?? null
 
   const highlightIds = useMemo(() => {
     if (activeMainId) {
@@ -97,31 +107,37 @@ function App() {
   function addMainPlanet() {
     setSelectedNodeId(null)
     setActiveMainId(null)
+    setConnectSourceId(null)
     setNodes((current) => {
       const systemIndex = current.filter((node) => node.type === 'main').length
+      const nextSystemNumber = current.reduce((max, node) => {
+        const match = node.type === 'main' ? /^Solar System (\d+)$/.exec(node.name) : null
+        return match ? Math.max(max, Number(match[1])) : max
+      }, 0) + 1
       const main = {
-        ...createMainPlanet(`Solar System ${systemIndex + 1}`, Math.random() * window.innerWidth, Math.random() * window.innerHeight),
+        ...createMainPlanet(`Solar System ${nextSystemNumber}`, viewportCenter.x, viewportCenter.y),
         systemIndex,
       }
       return [...current, main]
     })
   }
 
-  function addSubPlanet(name) {
+  function addSubPlanet(name, mainPlanetId) {
+    const createdAt = new Date().toISOString()
     const subPlanet = {
       id: createId('sub'),
       type: 'sub',
       name,
+      notes: '',
       tags: [],
-      createdAt: new Date().toISOString(),
+      createdAt,
+      lastVisited: createdAt,
       x: viewportCenter.x,
       y: viewportCenter.y,
-      solarSystemId: null,
+      solarSystemId: mainPlanetId ?? null,
     }
 
     setNodes((current) => [...current, subPlanet])
-    setSelectedNodeId(subPlanet.id)
-    setActiveMainId(null)
   }
 
   function selectNode(node) {
@@ -132,34 +148,50 @@ function App() {
     }
 
     setActiveMainId(null)
-    setSelectedNodeId((current) => {
-      if (current === node.id) return null
-      const selected = nodes.find((candidate) => candidate.id === current)
-      if (selected?.type === 'sub') {
-        const alreadyExists = edges.some(
-          (edge) =>
-            (edge.source === selected.id && edge.target === node.id) ||
-            (edge.source === node.id && edge.target === selected.id),
-        )
-        if (!alreadyExists) {
-          setEdges((currentEdges) => [...currentEdges, { id: createId('edge'), source: selected.id, target: node.id }])
-        }
-      }
-      return node.id
-    })
+    if (selectedNodeId !== node.id) {
+      setNodes((current) => current.map((candidate) => (candidate.id === node.id ? { ...candidate, lastVisited: new Date().toISOString() } : candidate)))
+    }
+    setSelectedNodeId((current) => (current === node.id ? null : node.id))
   }
 
   function clearSelection() {
     setSelectedNodeId(null)
     setActiveMainId(null)
-    setIsMenuOpen(false)
+    setConnectSourceId(null)
+  }
+
+  function toggleConnection(sourceId, targetId) {
+    setEdges((current) => {
+      const existing = current.find(
+        (edge) =>
+          (edge.source === sourceId && edge.target === targetId) ||
+          (edge.source === targetId && edge.target === sourceId),
+      )
+      if (existing) return current.filter((edge) => edge.id !== existing.id)
+      return [...current, { id: createId('edge'), source: sourceId, target: targetId }]
+    })
+    setConnectSourceId(null)
+  }
+
+  function disconnectAll(nodeId) {
+    setEdges((current) => current.filter((edge) => edge.source !== nodeId && edge.target !== nodeId))
   }
 
   function deleteNode(nodeId) {
     setSelectedNodeId((current) => (current === nodeId ? null : current))
     setActiveMainId((current) => (current === nodeId ? null : current))
+    setConnectSourceId((current) => (current === nodeId ? null : current))
     setNodes((current) => current.filter((node) => node.id !== nodeId))
     setEdges((current) => current.filter((edge) => edge.source !== nodeId && edge.target !== nodeId))
+  }
+
+  function deleteSolarSystem(mainPlanetId) {
+    const idsToDelete = new Set(nodes.filter((node) => node.id === mainPlanetId || node.solarSystemId === mainPlanetId).map((node) => node.id))
+    setSelectedNodeId(null)
+    setActiveMainId(null)
+    setConnectSourceId((current) => (idsToDelete.has(current) ? null : current))
+    setNodes((current) => current.filter((node) => !idsToDelete.has(node.id)))
+    setEdges((current) => current.filter((edge) => !idsToDelete.has(edge.source) && !idsToDelete.has(edge.target)))
   }
 
   function updateNode(nodeId, updates) {
@@ -171,19 +203,23 @@ function App() {
       <button
         className="menu-toggle"
         type="button"
-        aria-label="Toggle universe menu"
-        aria-expanded={isMenuOpen}
-        onClick={() => setIsMenuOpen((current) => !current)}
+        aria-label="Create new solar system"
+        onClick={addMainPlanet}
       >
-        ✦
+        <svg aria-hidden="true" viewBox="0 0 24 24" width="24" height="24">
+          <path d="M12 2.5l1.35 6.7 6.15 2.8-6.15 2.8L12 21.5l-1.35-6.7L4.5 12l6.15-2.8L12 2.5Z" />
+          <circle cx="12" cy="12" r="2.15" />
+        </svg>
       </button>
       <Universe
+        connectSourceId={connectSourceId}
         edges={edges}
-        highlightIds={highlightIds}
+        highlightIds={connectSourceId ? null : highlightIds}
         nodes={nodes}
         rearrangeRequest={rearrangeRequest}
         selectedNodeId={selectedNodeId}
         onClearSelection={clearSelection}
+        onConnectTarget={(node) => toggleConnection(connectSourceId, node.id)}
         onDeleteEdge={(edgeId) => setEdges((current) => current.filter((edge) => edge.id !== edgeId))}
         onDeleteNode={deleteNode}
         onNodePositionChange={updateNodesFromSimulation}
@@ -191,18 +227,24 @@ function App() {
         onViewportCenterChange={setViewportCenter}
       />
       <RightPanel
+        connectionCount={selectedNode ? edges.filter((edge) => edge.source === selectedNode.id || edge.target === selectedNode.id).length : 0}
+        isConnecting={connectSourceId !== null && connectSourceId === selectedNodeId}
         node={selectedNode}
         nodes={nodes}
+        onAddSubPlanet={addSubPlanet}
         onClose={clearSelection}
+        onDisconnectAll={() => disconnectAll(selectedNodeId)}
+        onDeleteNode={deleteNode}
+        onDeleteSolarSystem={deleteSolarSystem}
         onRearrange={(mainPlanetId) => setRearrangeRequest({ id: createId('rearrange'), mainPlanetId })}
+        onToggleConnect={() => setConnectSourceId((current) => (current === selectedNodeId ? null : selectedNodeId))}
         onUpdateNode={updateNode}
       />
-      <UniverseMenu
-        isOpen={isMenuOpen}
-        onAddMainPlanet={addMainPlanet}
-        onAddSubPlanet={addSubPlanet}
-        onClose={() => setIsMenuOpen(false)}
-      />
+      {connectSource ? (
+        <div className="connect-mode-indicator" role="status">
+          Connect mode — linking from “{connectSource.name}”. Click a planet to connect or disconnect, Esc to cancel.
+        </div>
+      ) : null}
     </main>
   )
 }

@@ -11,6 +11,9 @@ const FOCUS_PADDING = 90
 const FOCUS_DURATION = 420
 const INITIAL_FIT_PADDING = 120
 const RESET_DURATION = 400
+const TOOLTIP_OFFSET = 16
+const TOOLTIP_WIDTH = 220
+const TOOLTIP_HEIGHT = 58
 
 function randomStars(count, width, height) {
   return Array.from({ length: count }, (_, index) => {
@@ -72,13 +75,42 @@ function hitRadiusForNode(node) {
   return node.type === 'main' ? 24 : 10
 }
 
+function formatLastVisited(lastVisited) {
+  if (!lastVisited) return 'Never visited'
+
+  const elapsedMinutes = Math.floor((Date.now() - new Date(lastVisited).getTime()) / 60000)
+  if (!Number.isFinite(elapsedMinutes) || elapsedMinutes < 0) return 'Never visited'
+  if (elapsedMinutes < 60) return `${elapsedMinutes} minute${elapsedMinutes === 1 ? '' : 's'} ago`
+
+  const elapsedHours = Math.floor(elapsedMinutes / 60)
+  if (elapsedHours < 24) return `${elapsedHours} hour${elapsedHours === 1 ? '' : 's'} ago`
+
+  const elapsedDays = Math.floor(elapsedHours / 24)
+  return `${elapsedDays} day${elapsedDays === 1 ? '' : 's'} ago`
+}
+
+function tooltipPositionForNode(node, transform, viewport) {
+  const screenX = node.x * transform.k + transform.x
+  const screenY = node.y * transform.k + transform.y
+  const left = screenX + TOOLTIP_OFFSET + TOOLTIP_WIDTH > viewport.width
+    ? screenX - TOOLTIP_OFFSET - TOOLTIP_WIDTH
+    : screenX + TOOLTIP_OFFSET
+  const top = screenY - TOOLTIP_OFFSET - TOOLTIP_HEIGHT < 0
+    ? screenY + TOOLTIP_OFFSET
+    : screenY - TOOLTIP_OFFSET - TOOLTIP_HEIGHT
+
+  return { left, top }
+}
+
 export function Universe({
+  connectSourceId,
   edges,
   highlightIds,
   nodes,
   rearrangeRequest,
   selectedNodeId,
   onClearSelection,
+  onConnectTarget,
   onDeleteEdge,
   onDeleteNode,
   onNodePositionChange,
@@ -96,6 +128,7 @@ export function Universe({
   const [isPanning, setIsPanning] = useState(false)
   const [deleteEdgeId, setDeleteEdgeId] = useState(null)
   const [contextMenu, setContextMenu] = useState(null)
+  const [hoveredNodeId, setHoveredNodeId] = useState(null)
   const stars = useMemo(() => randomStars(520, window.innerWidth, window.innerHeight), [])
   const resetShortcutLabel = useMemo(() => (navigator.platform.includes('Mac') ? '⌘0' : 'Ctrl+0'), [])
   const simulation = useForceSimulation({ nodes, edges, rearrangeRequest, onNodePositionChange })
@@ -125,6 +158,16 @@ export function Universe({
   }, [])
 
   const visibleNodes = simulation.nodes
+
+  const connectLinkedIds = useMemo(() => {
+    if (!connectSourceId) return null
+    const linked = new Set()
+    for (const edge of edges) {
+      if (edge.source === connectSourceId) linked.add(edge.target)
+      else if (edge.target === connectSourceId) linked.add(edge.source)
+    }
+    return linked
+  }, [connectSourceId, edges])
 
   useEffect(() => {
     resetViewRef.current = resetView
@@ -175,6 +218,7 @@ export function Universe({
   }
 
   function resetView() {
+    onClearSelection()
     if (visibleNodes.length === 0) return
     animateToTransform(centerTransformForNodes(visibleNodes, size.width, size.height), RESET_DURATION)
   }
@@ -201,8 +245,21 @@ export function Universe({
   }
 
   function handleSelectNode(node) {
+    if (connectSourceId) {
+      if (node.id !== connectSourceId) onConnectTarget(node)
+      return
+    }
     onSelectNode(node)
     if (node.type === 'main') focusSolarSystem(node.id)
+  }
+
+  function handleNodeMouseEnter(node) {
+    if (connectSourceId || nodePointerRef.current?.isDragging) return
+    setHoveredNodeId(node.id)
+  }
+
+  function handleNodeMouseLeave() {
+    setHoveredNodeId(null)
   }
 
   function handleWheel(event) {
@@ -284,6 +341,7 @@ export function Universe({
       const distance = Math.hypot(event.clientX - candidate.clientX, event.clientY - candidate.clientY)
       if (!candidate.isDragging && distance > 4) {
         candidate.isDragging = true
+        setHoveredNodeId(null)
         cancelFocusAnimation()
         simulation.startDrag(candidate.node.id)
       }
@@ -334,13 +392,19 @@ export function Universe({
   const activeEdge = edges.find((edge) => edge.id === deleteEdgeId)
   const activeSource = visibleNodes.find((node) => node.id === activeEdge?.source)
   const activeTarget = visibleNodes.find((node) => node.id === activeEdge?.target)
+  const hoveredSimulationNode = !connectSourceId ? visibleNodes.find((node) => node.id === hoveredNodeId && node.type === 'sub') : null
+  const hoveredLatestNode = hoveredSimulationNode ? nodes.find((node) => node.id === hoveredSimulationNode.id) : null
+  const hoveredNode = hoveredSimulationNode && hoveredLatestNode
+    ? { ...hoveredLatestNode, x: hoveredSimulationNode.x, y: hoveredSimulationNode.y }
+    : hoveredSimulationNode
+  const tooltipPosition = hoveredNode ? tooltipPositionForNode(hoveredNode, transform, size) : null
 
   return (
     <>
       <svg
         ref={svgRef}
         aria-label="Knowledge Universe"
-        className={`universe${isPanning ? ' is-panning' : ''}`}
+        className={`universe${isPanning ? ' is-panning' : ''}${connectSourceId ? ' is-connecting' : ''}`}
         role="application"
         viewBox={`0 0 ${size.width} ${size.height}`}
         onContextMenu={handleContextMenu}
@@ -390,9 +454,13 @@ export function Universe({
             onSelectEdge={setDeleteEdgeId}
           />
           <NodeLayer
+            connectLinkedIds={connectLinkedIds}
+            connectSourceId={connectSourceId}
             highlightIds={highlightIds}
             nodes={visibleNodes}
             selectedNodeId={selectedNodeId}
+            onNodeMouseEnter={handleNodeMouseEnter}
+            onNodeMouseLeave={handleNodeMouseLeave}
           />
           {activeSource && activeTarget ? (
             <g className="edge-delete" transform={`translate(${(activeSource.x + activeTarget.x) / 2} ${(activeSource.y + activeTarget.y) / 2})`}>
@@ -413,6 +481,12 @@ export function Universe({
           >
             Delete
           </button>
+        </div>
+      ) : null}
+      {hoveredNode && tooltipPosition ? (
+        <div className="node-tooltip" style={{ left: tooltipPosition.left, top: tooltipPosition.top }}>
+          <strong>{hoveredNode.name}</strong>
+          <span>{formatLastVisited(hoveredNode.lastVisited)}</span>
         </div>
       ) : null}
       <button className="reset-view-button" type="button" title={`Reset view (${resetShortcutLabel})`} aria-label={`Reset view (${resetShortcutLabel})`} onClick={resetView}>
